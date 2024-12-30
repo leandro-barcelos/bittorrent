@@ -10,3 +10,4 @@ serde = { version = "1.0.195", features = ["derive"] }
 serde_bencode = "0.2.4"
 indexmap = "2.1.0"
 sha1_smol = "1.0.0"
+sha256 = "1.5.0"

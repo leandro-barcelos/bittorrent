@@ -8,7 +8,7 @@ pub enum Bencode {
     String(Vec<u8>),
     Integer(i64),
     List(Vec<Bencode>),
-    Dictionary(IndexMap<String, Bencode>),
+    Dictionary(IndexMap<Vec<u8>, Bencode>),
 }
 
 impl Display for Bencode {
@@ -40,7 +40,13 @@ impl Display for Bencode {
                 f.write_char('{')?;
 
                 for (i, (key, value)) in d.iter().enumerate() {
-                    f.write_str(format!(r#""{key}": {value}"#).as_str())?;
+                    if let Ok(key_string) = String::from_utf8(key.clone()) {
+                        f.write_str(format!(r#""{key_string}": {value}"#).as_str())?;
+                    } else {
+                        let hex_string: String =
+                            key.iter().map(|&byte| format!("{:02X}", byte)).collect();
+                        f.write_str(format!(r#""{hex_string}": {value}"#).as_str())?;
+                    }
                     if i + 1 < d.len() {
                         f.write_str(", ")?;
                     }
@@ -115,7 +121,7 @@ impl Bencode {
                     Self::decode_value(dict_string.to_vec())
                 {
                     let (value, rest) = Self::decode_value(rest);
-                    dict.insert(String::from_utf8(key_bytes).unwrap(), value);
+                    dict.insert(key_bytes, value);
                     if rest.first().unwrap() == &b'e' {
                         return (Bencode::Dictionary(dict), rest.split_at(1).1.to_vec());
                     }
@@ -158,9 +164,7 @@ impl Bencode {
                 let mut out = vec![b'd'];
 
                 for (key, value) in d {
-                    out.extend_from_slice(
-                        &Bencode::String(key.clone().into_bytes()).encode_value(),
-                    );
+                    out.extend_from_slice(&Bencode::String(key.clone()).encode_value());
                     out.extend_from_slice(&value.encode_value());
                 }
 
@@ -242,8 +246,8 @@ mod tests {
     #[test]
     fn decode_bencode_dictionary() {
         let mut test = IndexMap::new();
-        test.insert("foo".to_string(), Bencode::String(b"bar".to_vec()));
-        test.insert("hello".to_string(), Bencode::Integer(52));
+        test.insert(b"foo".to_vec(), Bencode::String(b"bar".to_vec()));
+        test.insert(b"hello".to_vec(), Bencode::Integer(52));
 
         assert_eq!(
             Bencode::decode_value(b"d3:foo3:bar5:helloi52ee".to_vec()),
@@ -254,11 +258,11 @@ mod tests {
     #[test]
     fn decode_bencode_nested_dict() {
         let mut test_nested = IndexMap::new();
-        test_nested.insert("hello".to_string(), Bencode::Integer(52));
+        test_nested.insert(b"hello".to_vec(), Bencode::Integer(52));
 
         let mut test = IndexMap::new();
-        test.insert("foo".to_string(), Bencode::String(b"bar".to_vec()));
-        test.insert("hi".to_string(), Bencode::Dictionary(test_nested));
+        test.insert(b"foo".to_vec(), Bencode::String(b"bar".to_vec()));
+        test.insert(b"hi".to_vec(), Bencode::Dictionary(test_nested));
 
         assert_eq!(
             Bencode::decode_value(b"d3:foo3:bar2:hid5:helloi52eee".to_vec()),
@@ -295,11 +299,11 @@ mod tests {
     #[test]
     fn encode_bencode_dict() {
         let mut test_nested = IndexMap::new();
-        test_nested.insert("hello".to_string(), Bencode::Integer(52));
+        test_nested.insert(b"hello".to_vec(), Bencode::Integer(52));
 
         let mut test = IndexMap::new();
-        test.insert("foo".to_string(), Bencode::String(b"bar".to_vec()));
-        test.insert("hi".to_string(), Bencode::Dictionary(test_nested));
+        test.insert(b"foo".to_vec(), Bencode::String(b"bar".to_vec()));
+        test.insert(b"hi".to_vec(), Bencode::Dictionary(test_nested));
 
         assert_eq!(
             Bencode::Dictionary(test).encode_value(),
