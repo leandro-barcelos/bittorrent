@@ -14,15 +14,19 @@ struct Info {
     name: String,
     piece_length: u32,
     meta_version: u8,
-    file_tree: HashMap<String, FileTree>,
-    length: u32,
-    pieces_root: Vec<u8>,
+    file_tree: FileTree,
 }
 
 #[derive(PartialEq, Debug)]
 enum FileTree {
-    File(File),
-    Directory(HashMap<String, FileTree>),
+    File(String, File),
+    Directory(String, Vec<FileTree>),
+}
+
+impl Default for FileTree {
+    fn default() -> Self {
+        FileTree::Directory(String::new(), Vec::new())
+    }
 }
 
 #[derive(PartialEq, Debug)]
@@ -118,7 +122,9 @@ impl Info {
                         }
                     }
                     "file tree" => {
-                        file_tree = Info::parse_file_tree(value).unwrap();
+                        file_tree = FileTree::Directory("".to_string(), FileTree::parse(value));
+                    }
+                    }
                     }
                     "length" => {
                         if let Bencode::Integer(length_int) = value {
@@ -150,28 +156,23 @@ impl Info {
         }
     }
 
-    fn parse_file_tree(file_tree_bencode: &Bencode) -> Option<HashMap<String, FileTree>> {
-        if let Bencode::Dictionary(file_tree_dict) = file_tree_bencode {
-            return Some(
-                file_tree_dict
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            String::from_utf8(k.clone()).unwrap(),
+impl FileTree {
+    fn parse(file_tree: &Bencode) -> Vec<FileTree> {
+        if let Bencode::Dictionary(file_tree_dict) = file_tree {
+            let mut content = Vec::new();
+
+            for (k, v) in file_tree_dict.iter() {
+                let name = String::from_utf8(k.clone()).unwrap();
+
                             match v {
                                 Bencode::Dictionary(child) => {
-                                    if let Some(Bencode::Dictionary(file_dict)) =
-                                        child.get(&b"".to_vec())
-                                    {
+                        if let Some(Bencode::Dictionary(file_dict)) = child.get(&b"".to_vec()) {
                                         let length = match file_dict.get(&b"length".to_vec()) {
-                                            Some(Bencode::Integer(length_int)) => {
-                                                *length_int as u32
-                                            }
+                                Some(Bencode::Integer(length_int)) => *length_int as u32,
                                             _ => panic!("Invalid or missing length field"),
                                         };
 
-                                        let pieces_root =
-                                            match file_dict.get(&b"pieces root".to_vec()) {
+                            let pieces_root = match file_dict.get(&b"pieces root".to_vec()) {
                                                 Some(Bencode::String(pieces_root_bytes)) => {
                                                     Some(pieces_root_bytes.clone())
                                                 }
@@ -183,21 +184,59 @@ impl Info {
                                             pieces_root,
                                         };
 
-                                        FileTree::File(file)
+                            content.push(FileTree::File(name, file));
                                     } else {
-                                        FileTree::Directory(Info::parse_file_tree(v).unwrap())
+                            content.push(FileTree::Directory(name, FileTree::parse(&v)));
                                     }
                                 }
                                 _ => panic!("Expected dictionary"),
-                            },
-                        )
-                    })
-                    .collect(),
-            );
+                }
+            }
+
+            return content;
         } else {
-            return None;
+            panic!("Expected dictionary when parsing file tree")
         }
     }
+
+    fn to_bencode(&self) -> Bencode {
+        if let FileTree::Directory(_, contents) = self {
+            let mut file_tree = IndexMap::new();
+
+            for content in contents {
+                match content {
+                    FileTree::File(name, file) => {
+                        let mut inner_description = IndexMap::new();
+                        inner_description
+                            .insert(b"length".to_vec(), Bencode::Integer(file.length.into()));
+                        if let Some(ref pieces_root) = file.pieces_root {
+                            inner_description.insert(
+                                b"pieces root".to_vec(),
+                                Bencode::String(pieces_root.clone()),
+            );
+                        }
+
+                        let inner_description_bencode = Bencode::Dictionary(inner_description);
+
+                        let mut description = IndexMap::new();
+                        description.insert(b"".to_vec(), inner_description_bencode);
+
+                        let description_bencode = Bencode::Dictionary(description);
+
+                        file_tree.insert(name.as_bytes().to_vec(), description_bencode);
+                    }
+                    FileTree::Directory(name, _) => {
+                        file_tree.insert(name.as_bytes().to_vec(), content.to_bencode());
+                    }
+                }
+            }
+
+            Bencode::Dictionary(file_tree)
+        } else {
+            panic!("It is only possible to convert directories to Bencode")
+        }
+    }
+}
 }
 
 fn main() {
@@ -302,54 +341,72 @@ mod test {
         assert_eq!(torrent.info.meta_version, 2);
     }
 
+    #[test]
     fn test_file_tree_parsing() {
         let mut file = fs::File::open("test_folder.torrent").unwrap();
         let mut content = Vec::new();
         file.read_to_end(&mut content).unwrap();
 
         let (metainfo, _) = Bencode::decode_value(content);
-        let torrent = Torrent::parse_metainfo(&metainfo);
+        let torrent = Torrent::parse(&metainfo);
 
-        let melk_abbey_library = File {
-            length: 1682177,
+        let readme = FileTree::File(
+            "README".to_string(),
+            File {
+                length: 20,
             pieces_root: Some(
-                "9e2f0845f16dcb0844fa09370622fd211027c9300838b021502fd7a63a452ffe"
-                    .as_bytes()
-                    .to_vec(),
+                    hex::decode("c87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe35")
+                        .unwrap(),
             ),
-        };
-        let loc_main = File {
-            length: 14657,
-            pieces_root: Some(
-                "90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9"
-                    .as_bytes()
-                    .to_vec(),
-            ),
-        };
+            },
+        );
 
-        let mut images_content = HashMap::new();
-        images_content.insert(
+        let loc_main = FileTree::File(
+            "LOC_Main_Reading_Room_Highsmith.jpg".to_string(),
+            File {
+                length: 17614527,
+            pieces_root: Some(
+                    hex::decode("90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9")
+                        .unwrap(),
+            ),
+            },
+        );
+
+        let melk_abbey_library = FileTree::File(
             "melk-abbey-library.jpg".to_string(),
-            FileTree::File(melk_abbey_library),
-        );
-        images_content.insert(
-            "LOC_Main_Reading_Room_Highsmith.jpg ".to_string(),
-            FileTree::File(loc_main),
+            File {
+                length: 1682177,
+                pieces_root: Some(
+                    hex::decode("9e2f0845f16dcb0844fa09370622fd211027c9300838b021502fd7a63a452ffe")
+                        .unwrap(),
+                ),
+            },
         );
 
-        let readme = File {
-            length: 20,
-            pieces_root: Some(
-                "c87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe35"
-                    .as_bytes()
-                    .to_vec(),
-            ),
-        };
+        let mut images_content = Vec::new();
+        images_content.push(loc_main);
+        images_content.push(melk_abbey_library);
 
-        let mut file_tree = HashMap::new();
-        file_tree.insert("images".to_string(), FileTree::Directory(images_content));
-        file_tree.insert("README".to_string(), FileTree::File(readme));
+        let images = FileTree::Directory("images".to_string(), images_content);
+
+        let mut file_tree_content = Vec::new();
+        file_tree_content.push(readme);
+        file_tree_content.push(images);
+
+        let file_tree = FileTree::Directory("".to_string(), file_tree_content);
 
         assert_eq!(torrent.info.file_tree, file_tree);
+    }
+
+    #[test]
+    fn test_file_tree_to_bencode() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let (metainfo, _) = Bencode::decode_value(content);
+        let torrent = Torrent::parse(&metainfo);
+
+        assert_eq!(String::from_utf8_lossy(&torrent.info.file_tree.to_bencode().encode_value()).into_owned(), String::from_utf8_lossy(&hex::decode("64363a524541444d4564303a64363a6c656e6774686932306531313a70696563657320726f6f7433323ac87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe356565363a696d616765736433353a4c4f435f4d61696e5f52656164696e675f526f6f6d5f48696768736d6974682e6a706764303a64363a6c656e6774686931373631343532376531313a70696563657320726f6f7433323a90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9656532323a6d656c6b2d61626265792d6c6962726172792e6a706764303a64363a6c656e67746869313638323137376531313a70696563657320726f6f7433323a9e2f0845f16dcb0844fa09370622fd211027c9300838b021502fd7a63a452ffe65656565").unwrap()).into_owned());
     }
 }
