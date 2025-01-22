@@ -2,6 +2,8 @@ mod bencode_decoder;
 
 use core::panic;
 use std::{collections::HashMap, fs, io::Read, path::PathBuf};
+
+use clap::Parser;
 use indexmap::IndexMap;
 
 use crate::bencode_decoder::Bencode;
@@ -170,7 +172,7 @@ impl Info {
                     "private" => {
                         if let Bencode::Integer(private_int) = value {
                             private = Some(*private_int != 0);
-                    }
+                        }
                     }
                     "length" => {
                         if let Bencode::Integer(length_int) = value {
@@ -336,8 +338,8 @@ impl Info {
         }
 
         Bencode::Dictionary(info)
-        }
     }
+}
 
 impl FileTree {
     fn parse(file_tree: &Bencode) -> Vec<FileTree> {
@@ -347,32 +349,32 @@ impl FileTree {
             for (k, v) in file_tree_dict.iter() {
                 let name = String::from_utf8(k.clone()).unwrap();
 
-                            match v {
-                                Bencode::Dictionary(child) => {
+                match v {
+                    Bencode::Dictionary(child) => {
                         if let Some(Bencode::Dictionary(file_dict)) = child.get(&b"".to_vec()) {
-                                        let length = match file_dict.get(&b"length".to_vec()) {
+                            let length = match file_dict.get(&b"length".to_vec()) {
                                 Some(Bencode::Integer(length_int)) => *length_int as u32,
-                                            _ => panic!("Invalid or missing length field"),
-                                        };
+                                _ => panic!("Invalid or missing length field"),
+                            };
 
                             let pieces_root = match file_dict.get(&b"pieces root".to_vec()) {
-                                                Some(Bencode::String(pieces_root_bytes)) => {
-                                                    Some(pieces_root_bytes.clone())
-                                                }
-                                                _ => None,
-                                            };
+                                Some(Bencode::String(pieces_root_bytes)) => {
+                                    Some(pieces_root_bytes.clone())
+                                }
+                                _ => None,
+                            };
 
-                                        let file = File {
-                                            length,
-                                            pieces_root,
-                                        };
+                            let file = File {
+                                length,
+                                pieces_root,
+                            };
 
                             content.push(FileTree::File(name, file));
-                                    } else {
+                        } else {
                             content.push(FileTree::Directory(name, FileTree::parse(&v)));
-                                    }
-                                }
-                                _ => panic!("Expected dictionary"),
+                        }
+                    }
+                    _ => panic!("Expected dictionary"),
                 }
             }
 
@@ -396,7 +398,7 @@ impl FileTree {
                             inner_description.insert(
                                 b"pieces root".to_vec(),
                                 Bencode::String(pieces_root.clone()),
-            );
+                            );
                         }
 
                         let inner_description_bencode = Bencode::Dictionary(inner_description);
@@ -420,23 +422,43 @@ impl FileTree {
         }
     }
 }
+
+#[derive(Parser)]
+struct Cli {
+    action: String,
+    path: PathBuf,
 }
 
 fn main() {
-    // let mut file = File::open("test.torrent").unwrap();
-    // let mut content = Vec::new();
-    // file.read_to_end(&mut content).unwrap();
+    let args = Cli::parse();
 
-    // if let (Bencode::Dictionary(metainfo), _) = Bencode::decode_value(content) {
-    //     if let Bencode::String(tracker_url) = &metainfo["announce"] {
-    //         if let Bencode::Dictionary(info) = &metainfo["info"] {
-    //             if let Bencode::Integer(length) = info["length"] {
-    //                 println!("Tracker URL: {}", String::from_utf8_lossy(tracker_url));
-    //                 println!("Length: {}", length);
-    //             }
-    //         }
-    //     }
-    // }
+    println!("action: {:?}, path: {:?}", args.action, args.path);
+
+    let mut file = fs::File::open(args.path).expect("could not read file");
+    let mut content = Vec::new();
+    file.read_to_end(&mut content).unwrap();
+
+    let (metainfo, _) = Bencode::decode_value(content);
+    let torrent = Torrent::parse(&metainfo);
+
+    let info_bytes = torrent.info.to_bencode().encode_value();
+
+    let mut m = sha1_smol::Sha1::new();
+    m.update(&info_bytes);
+    let info_hash_v1 = m.digest().to_string();
+
+    let info_hash_v2 = sha256::digest(&info_bytes);
+
+    match args.action.as_str() {
+        "info" => {
+            println!("Tracker URL: {}", torrent.announce);
+            println!("Length: {}", torrent.info.piece_length);
+            println!("Info Hash:");
+            println!("\tv1\t{}", info_hash_v1);
+            println!("\tv1\t{}", info_hash_v2);
+        }
+        _ => panic!("invalid argument"),
+    }
 }
 
 #[cfg(test)]
@@ -455,13 +477,13 @@ mod test {
         let torrent = Torrent::parse(&metainfo);
 
         let info_bytes = torrent.info.to_bencode().encode_value();
-            let mut m = sha1_smol::Sha1::new();
-            m.update(&info_bytes);
+        let mut m = sha1_smol::Sha1::new();
+        m.update(&info_bytes);
 
-            assert_eq!(
-                m.digest().to_string(),
-                "9f85123ad678b49f081e7269d953560e2a4f53ef"
-            );
+        assert_eq!(
+            m.digest().to_string(),
+            "9f85123ad678b49f081e7269d953560e2a4f53ef"
+        );
     }
 
     #[test]
@@ -475,10 +497,10 @@ mod test {
 
         let info_bytes = torrent.info.to_bencode().encode_value();
 
-            assert_eq!(
-                sha256::digest(&info_bytes),
-                "213d7245c6341d82a3b6661010e0129a88e3b02d97b848805e915f31d6545324"
-            );
+        assert_eq!(
+            sha256::digest(&info_bytes),
+            "213d7245c6341d82a3b6661010e0129a88e3b02d97b848805e915f31d6545324"
+        );
     }
 
     #[test]
@@ -542,10 +564,10 @@ mod test {
             "README".to_string(),
             File {
                 length: 20,
-            pieces_root: Some(
+                pieces_root: Some(
                     hex::decode("c87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe35")
                         .unwrap(),
-            ),
+                ),
             },
         );
 
@@ -553,10 +575,10 @@ mod test {
             "LOC_Main_Reading_Room_Highsmith.jpg".to_string(),
             File {
                 length: 17614527,
-            pieces_root: Some(
+                pieces_root: Some(
                     hex::decode("90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9")
                         .unwrap(),
-            ),
+                ),
             },
         );
 
