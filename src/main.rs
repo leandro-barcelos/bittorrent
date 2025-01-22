@@ -1,20 +1,20 @@
 mod bencode_decoder;
 
-use indexmap::IndexMap;
+use std::collections::HashMap;
 
 use crate::bencode_decoder::Bencode;
 
 struct Torrent {
     announce: String,
     info: Info,
-    piece_layers: IndexMap<Vec<u8>, Vec<u8>>,
+    piece_layers: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 struct Info {
     name: String,
     piece_length: u32,
     meta_version: u8,
-    file_tree: IndexMap<String, FileTree>,
+    file_tree: HashMap<String, FileTree>,
     length: u32,
     pieces_root: Vec<u8>,
 }
@@ -22,7 +22,7 @@ struct Info {
 #[derive(PartialEq, Debug)]
 enum FileTree {
     File(File),
-    Directory(IndexMap<String, FileTree>),
+    Directory(HashMap<String, FileTree>),
 }
 
 #[derive(PartialEq, Debug)]
@@ -39,13 +39,13 @@ impl Torrent {
                 name: String::new(),
                 piece_length: 0,
                 meta_version: 0,
-                file_tree: IndexMap::new(),
+                file_tree: HashMap::new(),
                 length: 0,
                 pieces_root: Vec::new(),
             };
-            let mut piece_layers = IndexMap::new();
+            let mut piece_layers = HashMap::new();
 
-            for (k, v) in metainfo_dict.iter() {
+            for (k, mut v) in metainfo_dict.iter() {
                 let key = String::from_utf8(k.clone()).unwrap();
 
                 match key.as_str() {
@@ -57,7 +57,7 @@ impl Torrent {
                             _ => panic!("Invalid or missing announce field"),
                         }
                     }
-                    "info" => info = Info::parse_info(v),
+                    "info" => info = Info::parse_info(&mut v),
                     "piece layers" => {
                         piece_layers = match v {
                             Bencode::Dictionary(piece_layers_dict) => piece_layers_dict
@@ -72,7 +72,7 @@ impl Torrent {
                                     )
                                 })
                                 .collect(),
-                            _ => IndexMap::new(),
+                            _ => HashMap::new(),
                         }
                     }
                     _ => panic!("Invalid key in metainfo"),
@@ -93,50 +93,49 @@ impl Torrent {
 impl Info {
     fn parse_info(info: &Bencode) -> Self {
         if let Bencode::Dictionary(info_dict) = info {
-            let keys: Vec<String> = info_dict
-                .keys()
-                .map(|k| String::from_utf8_lossy(k).to_string())
-                .collect();
-            println!("{:?}", keys);
+            let mut name = String::new();
+            let mut piece_length = 0;
+            let mut meta_version = 0;
+            let mut file_tree = HashMap::new();
+            let mut length = 0;
+            let mut pieces_root = Vec::new();
 
-            let name = match info_dict.get(&b"name".to_vec()) {
-                Some(Bencode::String(name)) => String::from_utf8_lossy(&name).to_string(),
-                _ => panic!("Invalid or missing name field"),
-            };
-
-            let piece_length = match info_dict.get(&b"piece length".to_vec()) {
-                Some(Bencode::String(piece_length)) => String::from_utf8(piece_length.clone())
-                    .unwrap()
-                    .parse::<u32>()
-                    .unwrap(),
-                _ => panic!("Invalid or missing piece length field"),
-            };
-
-            let meta_version = match info_dict.get(&b"meta version".to_vec()) {
-                Some(Bencode::String(meta_version)) => String::from_utf8(meta_version.clone())
-                    .unwrap()
-                    .parse::<u8>()
-                    .unwrap(),
-                _ => panic!("Invalid or missing piece length field"),
-            };
-
-            let file_tree = match info_dict.get(&b"file tree".to_vec()) {
-                Some(file_tree) => Info::parse_file_tree(file_tree.clone()).unwrap(),
-                _ => panic!("Invalid or missing file tree field"),
-            };
-
-            let length = match info_dict.get(&b"length".to_vec()) {
-                Some(Bencode::String(length)) => String::from_utf8(length.clone())
-                    .unwrap()
-                    .parse::<u32>()
-                    .unwrap(),
-                _ => panic!("Invalid or missing length field"),
-            };
-
-            let pieces_root = match info_dict.get(&b"pieces root".to_vec()) {
-                Some(Bencode::String(pieces_root)) => pieces_root.clone(),
-                _ => panic!("Invalid or missing pieces root field"),
-            };
+            for (key, value) in info_dict.iter() {
+                match String::from_utf8_lossy(&key).as_ref() {
+                    "name" => {
+                        if let Bencode::String(name_bytes) = value {
+                            name = String::from_utf8_lossy(&name_bytes).to_string();
+                        }
+                    }
+                    "piece length" => {
+                        if let Bencode::Integer(piece_length_int) = value {
+                            piece_length = *piece_length_int as u32;
+                        }
+                    }
+                    "meta version" => {
+                        if let Bencode::Integer(meta_version_int) = value {
+                            meta_version = *meta_version_int as u8;
+                        }
+                    }
+                    "file tree" => {
+                        file_tree = Info::parse_file_tree(value).unwrap();
+                    }
+                    "length" => {
+                        if let Bencode::Integer(length_int) = value {
+                            length = *length_int as u32;
+                        }
+                    }
+                    "pieces root" => {
+                        if let Bencode::String(pieces_root_bytes) = value {
+                            pieces_root = pieces_root_bytes.to_vec();
+                        }
+                    }
+                    _ => println!(
+                        "Invalid key in info dictionary: {:?}",
+                        String::from_utf8_lossy(&key)
+                    ),
+                }
+            }
 
             Info {
                 name,
@@ -151,7 +150,7 @@ impl Info {
         }
     }
 
-    fn parse_file_tree(file_tree_bencode: Bencode) -> Option<IndexMap<String, FileTree>> {
+    fn parse_file_tree(file_tree_bencode: &Bencode) -> Option<HashMap<String, FileTree>> {
         if let Bencode::Dictionary(file_tree_dict) = file_tree_bencode {
             return Some(
                 file_tree_dict
@@ -159,40 +158,37 @@ impl Info {
                     .map(|(k, v)| {
                         (
                             String::from_utf8(k.clone()).unwrap(),
-                            // Is a file if the child dictionary contains an empty key
-                            if let Bencode::Dictionary(child) = v {
-                                if let Some(Bencode::Dictionary(file_dict)) =
-                                    child.get(&b"".to_vec())
-                                {
-                                    let length = match file_dict.get(&b"length".to_vec()) {
-                                        Some(Bencode::String(length)) => {
-                                            String::from_utf8(length.clone())
-                                                .unwrap()
-                                                .parse::<u32>()
-                                                .unwrap()
-                                        }
-                                        _ => panic!("Invalid or missing length field"),
-                                    };
-
-                                    let pieces_root = match file_dict.get(&b"pieces root".to_vec())
+                            match v {
+                                Bencode::Dictionary(child) => {
+                                    if let Some(Bencode::Dictionary(file_dict)) =
+                                        child.get(&b"".to_vec())
                                     {
-                                        Some(Bencode::String(pieces_root)) => {
-                                            Some(pieces_root.clone())
-                                        }
-                                        _ => None,
-                                    };
+                                        let length = match file_dict.get(&b"length".to_vec()) {
+                                            Some(Bencode::Integer(length_int)) => {
+                                                *length_int as u32
+                                            }
+                                            _ => panic!("Invalid or missing length field"),
+                                        };
 
-                                    let file = File {
-                                        length,
-                                        pieces_root,
-                                    };
+                                        let pieces_root =
+                                            match file_dict.get(&b"pieces root".to_vec()) {
+                                                Some(Bencode::String(pieces_root_bytes)) => {
+                                                    Some(pieces_root_bytes.clone())
+                                                }
+                                                _ => None,
+                                            };
 
-                                    FileTree::File(file)
-                                } else {
-                                    FileTree::Directory(Info::parse_file_tree(v.clone()).unwrap())
+                                        let file = File {
+                                            length,
+                                            pieces_root,
+                                        };
+
+                                        FileTree::File(file)
+                                    } else {
+                                        FileTree::Directory(Info::parse_file_tree(v).unwrap())
+                                    }
                                 }
-                            } else {
-                                panic!("Expected dictionary");
+                                _ => panic!("Expected dictionary"),
                             },
                         )
                     })
@@ -223,12 +219,12 @@ fn main() {
 
 #[cfg(test)]
 mod test {
-    use std::{fs, io::Read};
+    use std::{collections::HashMap, fs, io::Read};
 
     use super::*;
 
     #[test]
-    fn test_sha_info() {
+    fn test_sha1_info() {
         let mut file = fs::File::open("test_folder.torrent").unwrap();
         let mut content = Vec::new();
         file.read_to_end(&mut content).unwrap();
@@ -242,6 +238,17 @@ mod test {
                 m.digest().to_string(),
                 "9f85123ad678b49f081e7269d953560e2a4f53ef"
             );
+        };
+    }
+
+    #[test]
+    fn test_sha256_info() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        if let (Bencode::Dictionary(metainfo), _) = Bencode::decode_value(content) {
+            let info_bytes = metainfo[&b"info".to_vec()].clone().encode_value();
 
             assert_eq!(
                 sha256::digest(&info_bytes),
@@ -251,7 +258,7 @@ mod test {
     }
 
     #[test]
-    fn test_metainfo_parsing() {
+    fn test_announce_parsing() {
         let mut file = fs::File::open("test_folder.torrent").unwrap();
         let mut content = Vec::new();
         file.read_to_end(&mut content).unwrap();
@@ -260,9 +267,48 @@ mod test {
         let torrent = Torrent::parse_metainfo(&metainfo);
 
         assert_eq!(torrent.announce, "http://example.com/announce");
+    }
+
+    fn test_info_name_parsing() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let (metainfo, _) = Bencode::decode_value(content);
+        let torrent = Torrent::parse_metainfo(&metainfo);
+
         assert_eq!(torrent.info.name, "test_folder");
+    }
+
+    fn test_piece_length_parsing() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let (metainfo, _) = Bencode::decode_value(content);
+        let torrent = Torrent::parse_metainfo(&metainfo);
+
         assert_eq!(torrent.info.piece_length, 65536);
+    }
+
+    fn test_meta_version_parsing() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let (metainfo, _) = Bencode::decode_value(content);
+        let torrent = Torrent::parse_metainfo(&metainfo);
+
         assert_eq!(torrent.info.meta_version, 2);
+    }
+
+    fn test_file_tree_parsing() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let (metainfo, _) = Bencode::decode_value(content);
+        let torrent = Torrent::parse_metainfo(&metainfo);
 
         let melk_abbey_library = File {
             length: 1682177,
@@ -281,7 +327,7 @@ mod test {
             ),
         };
 
-        let mut images_content = IndexMap::new();
+        let mut images_content = HashMap::new();
         images_content.insert(
             "melk-abbey-library.jpg".to_string(),
             FileTree::File(melk_abbey_library),
@@ -300,7 +346,7 @@ mod test {
             ),
         };
 
-        let mut file_tree = IndexMap::new();
+        let mut file_tree = HashMap::new();
         file_tree.insert("images".to_string(), FileTree::Directory(images_content));
         file_tree.insert("README".to_string(), FileTree::File(readme));
 
