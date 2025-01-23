@@ -284,6 +284,38 @@ impl FileTree {
     }
 }
 
+impl std::fmt::Display for FileTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn fmt_helper(
+            tree: &FileTree,
+            path: &str,
+            f: &mut std::fmt::Formatter<'_>,
+        ) -> std::fmt::Result {
+            match tree {
+                FileTree::File(name, file) => {
+                    writeln!(
+                        f,
+                        "\t{}{} (length: {}, pieces_root: {})",
+                        path,
+                        name,
+                        file.length,
+                        hex::encode(&file.pieces_root)
+                    )
+                }
+                FileTree::Directory(name, contents) => {
+                    let new_path = format!("{}{}/", path, name);
+                    for content in contents {
+                        fmt_helper(content, &new_path, f)?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        fmt_helper(self, "", f)
+    }
+}
+
 #[derive(Parser)]
 struct Cli {
     action: String,
@@ -305,8 +337,9 @@ fn main() {
     match args.action.as_str() {
         "info" => {
             println!("Tracker URL: {}", torrent.announce);
-            println!("Length: {}", torrent.info.piece_length);
+            println!("Files: \n{}", torrent.info.file_tree);
             println!("Info Hash: {}", torrent.info.get_infohash());
+            println!("Piece Length: {}", torrent.info.piece_length);
         }
         _ => panic!("invalid argument"),
     }
