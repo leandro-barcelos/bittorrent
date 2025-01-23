@@ -50,23 +50,6 @@ struct File {
     pieces_root: Option<Vec<u8>>,
 }
 
-enum FileModeV1 {
-    Single {
-        length: u32,
-        md5sum: Option<Vec<u8>>,
-    },
-    Multiple {
-        files: Vec<FileV1>,
-    },
-}
-
-struct FileV1 {
-    length: u32,
-    md5sum: Option<Vec<u8>>,
-    path: PathBuf,
-    attr: Option<char>,
-}
-
 impl Torrent {
     fn parse(metainfo: &Bencode) -> Self {
         if let Bencode::Dictionary(metainfo_dict) = metainfo {
