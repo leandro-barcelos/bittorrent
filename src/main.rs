@@ -44,10 +44,10 @@ impl Default for FileTree {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 struct File {
     length: u32,
-    pieces_root: Option<Vec<u8>>,
+    pieces_root: Vec<u8>,
 }
 
 impl Torrent {
@@ -87,7 +87,7 @@ impl Torrent {
                             _ => HashMap::new(),
                         }
                     }
-                    _ => panic!("Invalid key in metainfo"),
+                    _ => println!("Invalid key in metainfo: {:?}", key),
                 }
             }
 
@@ -99,6 +99,27 @@ impl Torrent {
         } else {
             panic!("Error parsing torrent file");
         }
+    }
+
+    fn verify_infohash(&self, infohash: String) -> bool {
+        if infohash != self.info.get_infohash() {
+            println!("Infohash is invalid");
+            return false;
+        }
+
+        let mut files = Vec::new();
+        self.info.file_tree.get_files(&mut files);
+
+        let piece_roots: Vec<Vec<u8>> = files.iter().map(|file| file.pieces_root.clone()).collect();
+
+        for key in self.piece_layers.keys() {
+            if !piece_roots.contains(key) {
+                println!("Piece root not found: {:?}", key);
+                return false;
+            }
+        }
+
+        return true;
     }
 }
 
@@ -191,9 +212,9 @@ impl FileTree {
 
                             let pieces_root = match file_dict.get(&b"pieces root".to_vec()) {
                                 Some(Bencode::String(pieces_root_bytes)) => {
-                                    Some(pieces_root_bytes.clone())
+                                    pieces_root_bytes.clone()
                                 }
-                                _ => None,
+                                _ => panic!("Invalid or missing pieces root field"),
                             };
 
                             let file = File {
@@ -226,12 +247,11 @@ impl FileTree {
                         let mut inner_description = IndexMap::new();
                         inner_description
                             .insert(b"length".to_vec(), Bencode::Integer(file.length.into()));
-                        if let Some(ref pieces_root) = file.pieces_root {
-                            inner_description.insert(
-                                b"pieces root".to_vec(),
-                                Bencode::String(pieces_root.clone()),
-                            );
-                        }
+
+                        inner_description.insert(
+                            b"pieces root".to_vec(),
+                            Bencode::String(file.pieces_root.clone()),
+                        );
 
                         let inner_description_bencode = Bencode::Dictionary(inner_description);
 
@@ -252,6 +272,15 @@ impl FileTree {
         } else {
             panic!("It is only possible to convert directories to Bencode")
         }
+    }
+
+    fn get_files(&self, files: &mut Vec<File>) {
+        match self {
+            FileTree::Directory(_, contents) => {
+                contents.iter().for_each(|content| content.get_files(files))
+            }
+            FileTree::File(_, file) => files.push(file.clone()),
+        };
     }
 }
 
@@ -367,10 +396,10 @@ mod test {
             "README".to_string(),
             File {
                 length: 20,
-                pieces_root: Some(
-                    hex::decode("c87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe35")
-                        .unwrap(),
-                ),
+                pieces_root: hex::decode(
+                    "c87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe35",
+                )
+                .unwrap(),
             },
         );
 
@@ -378,10 +407,10 @@ mod test {
             "LOC_Main_Reading_Room_Highsmith.jpg".to_string(),
             File {
                 length: 17614527,
-                pieces_root: Some(
-                    hex::decode("90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9")
-                        .unwrap(),
-                ),
+                pieces_root: hex::decode(
+                    "90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9",
+                )
+                .unwrap(),
             },
         );
 
@@ -389,10 +418,10 @@ mod test {
             "melk-abbey-library.jpg".to_string(),
             File {
                 length: 1682177,
-                pieces_root: Some(
-                    hex::decode("9e2f0845f16dcb0844fa09370622fd211027c9300838b021502fd7a63a452ffe")
-                        .unwrap(),
-                ),
+                pieces_root: hex::decode(
+                    "9e2f0845f16dcb0844fa09370622fd211027c9300838b021502fd7a63a452ffe",
+                )
+                .unwrap(),
             },
         );
 
@@ -433,5 +462,60 @@ mod test {
         let torrent = Torrent::parse(&metainfo);
 
         assert_eq!(String::from_utf8_lossy(&torrent.info.to_bencode().encode_value()).into_owned(), String::from_utf8_lossy(&hex::decode("64393a66696c65207472656564363a524541444d4564303a64363a6c656e6774686932306531313a70696563657320726f6f7433323ac87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe356565363a696d616765736433353a4c4f435f4d61696e5f52656164696e675f526f6f6d5f48696768736d6974682e6a706764303a64363a6c656e6774686931373631343532376531313a70696563657320726f6f7433323a90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9656532323a6d656c6b2d61626265792d6c6962726172792e6a706764303a64363a6c656e67746869313638323137376531313a70696563657320726f6f7433323a9e2f0845f16dcb0844fa09370622fd211027c9300838b021502fd7a63a452ffe6565656531323a6d6574612076657273696f6e693265343a6e616d6531313a746573745f666f6c64657231323a7069656365206c656e6774686936353533366565").unwrap()).to_owned());
+    }
+
+    #[test]
+    fn test_file_tree_get_files() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let (metainfo, _) = Bencode::decode_value(content);
+        let torrent = Torrent::parse(&metainfo);
+
+        let readme = File {
+            length: 20,
+            pieces_root: hex::decode(
+                "c87e2ca771bab6024c269b933389d2a92d4941c848c52f155b9b84e1f109fe35",
+            )
+            .unwrap(),
+        };
+
+        let loc_main = File {
+            length: 17614527,
+            pieces_root: hex::decode(
+                "90a24c4b7a34568fc4a2a62a0079204e9766e19f9a0069546189f120017656f9",
+            )
+            .unwrap(),
+        };
+
+        let melk_abbey_library = File {
+            length: 1682177,
+            pieces_root: hex::decode(
+                "9e2f0845f16dcb0844fa09370622fd211027c9300838b021502fd7a63a452ffe",
+            )
+            .unwrap(),
+        };
+
+        let mut files = Vec::new();
+        torrent.info.file_tree.get_files(&mut files);
+
+        println!("{:?}", files);
+
+        assert_eq!(files, vec![readme, loc_main, melk_abbey_library]);
+    }
+
+    #[test]
+    fn test_verify_infohash() {
+        let mut file = fs::File::open("test_folder.torrent").unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let (metainfo, _) = Bencode::decode_value(content);
+        let torrent = Torrent::parse(&metainfo);
+
+        assert!(torrent.verify_infohash(
+            "22fd2f407dd4187ca9b77b7937587f53346f0aebe326a2a8ac583e3b8cfc8bdd".to_string()
+        ))
     }
 }
